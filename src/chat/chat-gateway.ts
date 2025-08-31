@@ -12,13 +12,16 @@ import { ChatService } from './chat.service';
 import { SendMessageDto } from './dto/send-message.dto';
 import { JoinChatDto } from './dto/join-chat.dto';
 import { LeaveChatDto } from './dto/leave-chat.dto';
+import { StartChatByEmailDto } from './dto/start-chat-by-email.dto';
 import { ObjectId } from 'mongodb';
+import { AuthService } from 'src/auth/auth.service';
 
 @WebSocketGateway(3002, { cors: { origin: '*' } })
 export class ChatGateway implements OnGatewayConnection, OnGatewayDisconnect {
   constructor(
     private readonly JwtService: JwtService,
     private readonly chatService: ChatService,
+    private readonly authService: AuthService,
   ) {}
   @WebSocketServer() server: Server;
 
@@ -172,6 +175,116 @@ export class ChatGateway implements OnGatewayConnection, OnGatewayDisconnect {
       console.error('Error sending message:', error);
       client.emit('error', {
         message: 'Failed to send message',
+      });
+    }
+  }
+
+  @SubscribeMessage('startChatByEmail')
+  async handleStartChatByEmail(
+    client: AuthenticatedSocket,
+    payload: StartChatByEmailDto,
+  ) {
+    try {
+      const currentUserId = new ObjectId(client.userId);
+      const { recipientEmail, initialMessage } = payload;
+
+      // Check if user email is available
+      if (!client.userEmail) {
+        client.emit('error', {
+          message: 'User authentication error',
+        });
+        return;
+      }
+
+      // Check if trying to start chat with themselves
+      if (recipientEmail.toLowerCase() === client.userEmail.toLowerCase()) {
+        client.emit('error', {
+          message: 'Cannot start a chat with yourself',
+        });
+        return;
+      }
+
+      // Find the recipient user by email
+      const recipientUser =
+        await this.authService.findUserByEmail(recipientEmail);
+
+      if (!recipientUser) {
+        client.emit('error', {
+          message: 'User with this email does not exist',
+        });
+        return;
+      }
+
+      const recipientUserId = new ObjectId(recipientUser._id);
+
+      // Find or create private chat
+      const chat = await this.chatService.findOrCreatePrivateChat(
+        currentUserId,
+        recipientUserId,
+      );
+
+      // If there's an initial message, send it
+      if (initialMessage && initialMessage.trim()) {
+        const messageResult = await this.chatService.sendMessage(
+          chat._id,
+          currentUserId,
+          initialMessage.trim(),
+        );
+
+        if (messageResult.acknowledged) {
+          const messageToSend = {
+            _id: messageResult.insertedId.toString(),
+            chatId: chat._id.toString(),
+            senderId: currentUserId.toString(),
+            senderEmail: client.userEmail,
+            content: initialMessage.trim(),
+            createdAt: new Date(),
+          };
+
+          // Send message to chat room
+          this.server.to(chat._id.toString()).emit('message', messageToSend);
+
+          // Send chat update to recipient
+          const chatUpdate = {
+            chatId: chat._id.toString(),
+            lastMessage: {
+              content: initialMessage.trim(),
+              senderEmail: client.userEmail,
+              senderId: currentUserId.toString(),
+              createdAt: new Date(),
+            },
+            updatedAt: new Date(),
+          };
+
+          this.server
+            .to(`user_${recipientUserId.toString()}`)
+            .emit('chatUpdated', chatUpdate);
+        }
+      }
+
+      // Notify both users about the new/found chat
+      client.emit('chatStarted', {
+        success: true,
+        chat: {
+          _id: chat._id.toString(),
+          type: chat.type,
+          participants: chat.participants.map((p) => p.toString()),
+          createdAt: chat.createdAt,
+          updatedAt: chat.updatedAt,
+        },
+      });
+
+      this.server
+        .to(`user_${recipientUserId.toString()}`)
+        .emit('chatCreated', chat);
+
+      console.log(
+        `Chat started between ${client.userEmail} and ${recipientEmail}`,
+      );
+    } catch (error) {
+      console.error('Error starting chat by email:', error);
+      client.emit('error', {
+        message: 'Failed to start chat',
       });
     }
   }

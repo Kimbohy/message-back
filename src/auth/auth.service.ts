@@ -165,4 +165,26 @@ export class AuthService {
       createdAt: user.createdAt,
     };
   }
+
+  async findUserByEmail(
+    email: string,
+  ): Promise<BaseUserWithoutPassword | null> {
+    try {
+      const user = await this.db
+        .collection<BaseUser>('users')
+        .findOne({ email: email.toLowerCase() });
+
+      if (!user) {
+        return null;
+      }
+
+      const { password: _, ...userWithoutPassword } = user;
+      return {
+        ...userWithoutPassword,
+        _id: user._id.toString(),
+      };
+    } catch (error) {
+      return null;
+    }
+  }
 }

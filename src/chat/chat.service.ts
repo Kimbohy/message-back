@@ -88,4 +88,36 @@ export class ChatService {
       .findOne({ _id: chatId })
       .then((chat) => !!chat);
   }
+
+  async findOrCreatePrivateChat(
+    user1Id: ObjectId,
+    user2Id: ObjectId,
+  ): Promise<Chat> {
+    // Check if a private chat already exists between these users
+    const existingChat = await this.db.collection<Chat>('chats').findOne({
+      type: ChatType.PRIVATE,
+      participants: { $all: [user1Id, user2Id], $size: 2 },
+    });
+
+    if (existingChat) {
+      return existingChat;
+    }
+
+    // Create new private chat
+    const chat: Chat = {
+      _id: new ObjectId(),
+      type: ChatType.PRIVATE,
+      participants: [user1Id, user2Id],
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    };
+
+    const result = await this.db.collection<Chat>('chats').insertOne(chat);
+
+    if (result.acknowledged) {
+      return chat;
+    }
+
+    throw new Error('Failed to create chat');
+  }
 }
