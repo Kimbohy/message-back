@@ -11,6 +11,8 @@ async function bootstrap() {
     logger: ['error', 'warn', 'log', 'debug', 'verbose'],
   });
 
+  app.setGlobalPrefix('api');
+
   // Global exception filter
   app.useGlobalFilters(new AllExceptionsFilter());
 
@@ -19,7 +21,7 @@ async function bootstrap() {
 
   // CORS configuration
   app.enableCors({
-    origin: process.env.CORS_ORIGIN || 'http://localhost:3000',
+    origin: '*', // process.env.CORS_ORIGIN || 'http://localhost:3000',
     credentials: true,
     methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'],
     allowedHeaders: ['Content-Type', 'Authorization'],

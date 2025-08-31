@@ -24,6 +24,8 @@ export class AuthController {
   async register(
     @Body(ValidationPipe) registerDto: RegisterDto,
   ): Promise<{ message: string; user: UserResponseDto }> {
+    console.log(registerDto);
+
     const user = await this.authService.registerUser(registerDto);
     return {
       message: 'User registered successfully',

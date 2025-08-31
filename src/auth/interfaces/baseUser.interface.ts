@@ -1,6 +1,6 @@
 import { ObjectId } from 'mongodb';
 
-export interface User {
+export interface BaseUser {
   _id?: ObjectId | string;
   email: string;
   password: string;
@@ -9,7 +9,7 @@ export interface User {
   updatedAt: Date;
 }
 
-export interface UserWithoutPassword {
+export interface BaseUserWithoutPassword {
   _id: string;
   email: string;
   name: string;

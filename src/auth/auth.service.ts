@@ -11,7 +11,10 @@ import { Db, ObjectId } from 'mongodb';
 import * as bcrypt from 'bcryptjs';
 import { LoginDto, UserResponseDto } from './dto/User.dto';
 import { RegisterDto } from './dto/Register.dto';
-import { User, UserWithoutPassword } from './interfaces/user.interface';
+import {
+  BaseUser,
+  BaseUserWithoutPassword,
+} from './interfaces/baseUser.interface';
 import { JwtPayload } from './strategies/jwt.strategy';
 
 @Injectable()
@@ -24,10 +27,10 @@ export class AuthService {
   async validateUser(
     email: string,
     password: string,
-  ): Promise<UserWithoutPassword | null> {
+  ): Promise<BaseUserWithoutPassword | null> {
     try {
       const user = await this.db
-        .collection<User>('users')
+        .collection<BaseUser>('users')
         .findOne({ email: email.toLowerCase() });
 
       if (!user) {
@@ -50,10 +53,12 @@ export class AuthService {
   }
 
   async registerUser(data: RegisterDto): Promise<UserResponseDto> {
+    console.log(data);
+
     try {
       // Check if user already exists
       const existingUser = await this.db
-        .collection<User>('users')
+        .collection<BaseUser>('users')
         .findOne({ email: data.email.toLowerCase() });
 
       if (existingUser) {
@@ -66,7 +71,7 @@ export class AuthService {
 
       // Create user object
       const now = new Date();
-      const newUser: User = {
+      const newUser: BaseUser = {
         email: data.email.toLowerCase(),
         password: hashedPassword,
         name: data.name.trim(),
@@ -75,7 +80,9 @@ export class AuthService {
       };
 
       // Insert user
-      const result = await this.db.collection<User>('users').insertOne(newUser);
+      const result = await this.db
+        .collection<BaseUser>('users')
+        .insertOne(newUser);
 
       // Return user without password
       return {
@@ -120,14 +127,14 @@ export class AuthService {
     };
   }
 
-  async findUserById(id: string): Promise<UserWithoutPassword | null> {
+  async findUserById(id: string): Promise<BaseUserWithoutPassword | null> {
     try {
       if (!ObjectId.isValid(id)) {
         return null;
       }
 
       const user = await this.db
-        .collection<User>('users')
+        .collection<BaseUser>('users')
         .findOne({ _id: new ObjectId(id) });
 
       if (!user) {

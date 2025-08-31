@@ -12,7 +12,7 @@ import { DatabaseModule } from '../database/database.module';
     DatabaseModule,
     PassportModule,
     JwtModule.register({
-      secret: process.env.JWT_SECRET || 'your-secret-key-change-in-production',
+      secret: process.env.JWT_SECRET || 'super-secret-key',
       signOptions: {
         expiresIn: process.env.JWT_EXPIRES_IN || '7d',
         issuer: 'whatsapp-clone',

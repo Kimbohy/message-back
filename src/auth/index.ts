@@ -8,7 +8,10 @@ export { LoginDto, UserResponseDto } from './dto/User.dto';
 export { RegisterDto } from './dto/Register.dto';
 
 // Interfaces
-export { User, UserWithoutPassword } from './interfaces/user.interface';
+export {
+  BaseUser,
+  BaseUserWithoutPassword,
+} from './interfaces/baseUser.interface';
 
 // Strategies
 export { JwtStrategy, JwtPayload } from './strategies/jwt.strategy';
