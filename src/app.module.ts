@@ -5,6 +5,7 @@ import { AppService } from './app.service';
 import { ChatModule } from './chat/chat.module';
 import { AuthModule } from './auth/auth.module';
 import { DatabaseModule } from './database/database.module';
+import { AppConfigModule } from './config';
 
 @Module({
   imports: [
@@ -12,6 +13,7 @@ import { DatabaseModule } from './database/database.module';
       isGlobal: true,
       envFilePath: '.env',
     }),
+    AppConfigModule,
     ChatModule,
     AuthModule,
     DatabaseModule,

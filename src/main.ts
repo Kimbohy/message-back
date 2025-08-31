@@ -3,6 +3,7 @@ import { AppModule } from './app.module';
 import { Logger } from '@nestjs/common';
 import { AllExceptionsFilter } from './common/filters/all-exceptions.filter';
 import { validationPipeConfig } from './common/pipes/validation.pipe';
+import { AppConfigService } from './config';
 
 async function bootstrap() {
   const logger = new Logger('Bootstrap');
@@ -10,6 +11,8 @@ async function bootstrap() {
   const app = await NestFactory.create(AppModule, {
     logger: ['error', 'warn', 'log', 'debug', 'verbose'],
   });
+
+  const configService = app.get(AppConfigService);
 
   app.setGlobalPrefix('api');
 
@@ -21,7 +24,7 @@ async function bootstrap() {
 
   // CORS configuration
   app.enableCors({
-    origin: '*', // process.env.CORS_ORIGIN || 'http://localhost:3000',
+    origin: '*', // configService.corsOrigin,
     credentials: true,
     methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'],
     allowedHeaders: ['Content-Type', 'Authorization'],
@@ -35,11 +38,11 @@ async function bootstrap() {
     next();
   });
 
-  const port = process.env.PORT || 3001;
+  const port = configService.port;
   await app.listen(port);
 
   logger.log(`Application is running on: http://localhost:${port}`);
-  logger.log(`Environment: ${process.env.NODE_ENV || 'default'}`);
+  logger.log(`Environment: ${configService.env}`);
 }
 
 bootstrap().catch((error) => {

@@ -1,17 +1,19 @@
 import { Global, Module } from '@nestjs/common';
 import { Db, MongoClient } from 'mongodb';
+import { AppConfigModule, AppConfigService } from '../config';
 
-const uri = process.env.MONGO_URI || 'mongodb://localhost:27018/whatsapp_db';
-const client = new MongoClient(uri);
 @Global()
 @Module({
+  imports: [AppConfigModule],
   providers: [
     {
       provide: 'MONGO_DB',
-      useFactory: async (): Promise<Db> => {
+      useFactory: async (configService: AppConfigService): Promise<Db> => {
+        const client = new MongoClient(configService.mongoUri);
         await client.connect();
         return client.db();
       },
+      inject: [AppConfigService],
     },
   ],
   exports: ['MONGO_DB'],
