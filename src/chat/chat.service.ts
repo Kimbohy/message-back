@@ -25,7 +25,34 @@ export class ChatService {
   getChatsForUser(userId: ObjectId) {
     return this.db
       .collection<Chat>('chats')
-      .find({ participants: userId })
+      .aggregate([
+        { $match: { participants: userId } },
+        {
+          $lookup: {
+            from: 'users',
+            localField: 'participants',
+            foreignField: '_id',
+            as: 'participants',
+          },
+        },
+        // Populate the lastMessage object (if present), and populate its sender
+        {
+          $lookup: {
+            from: 'messages',
+            localField: 'lastMessage',
+            foreignField: '_id',
+            as: 'lastMessage',
+          },
+        },
+        { $unwind: { path: '$lastMessage', preserveNullAndEmptyArrays: true } },
+        // Remove password fields from joined user documents (participants and lastMessage.sender)
+        {
+          $project: {
+            'participants.password': 0,
+            'lastMessage.chatId': 0,
+          },
+        },
+      ])
       .toArray();
   }
 
