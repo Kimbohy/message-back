@@ -15,11 +15,13 @@ import { LeaveChatDto } from './dto/leave-chat.dto';
 import { StartChatByEmailDto } from './dto/start-chat-by-email.dto';
 import { ObjectId } from 'mongodb';
 import { AuthService } from 'src/auth/auth.service';
+import { Inject, forwardRef } from '@nestjs/common';
 
 @WebSocketGateway(3002, { cors: { origin: '*' } })
 export class ChatGateway implements OnGatewayConnection, OnGatewayDisconnect {
   constructor(
     private readonly JwtService: JwtService,
+    @Inject(forwardRef(() => ChatService))
     private readonly chatService: ChatService,
     private readonly authService: AuthService,
   ) {}
