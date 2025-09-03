@@ -98,6 +98,7 @@ export class ChatService {
       content,
       createdAt: new Date(),
       updatedAt: new Date(),
+      seenBy: [senderId],
     };
     const result = await this.db.collection('messages').insertOne(message);
     if (result.acknowledged) {
@@ -125,6 +126,17 @@ export class ChatService {
     return this.db
       .collection<Chat>('chats')
       .updateOne({ _id: chatId }, { $pull: { participants: userId } });
+  }
+
+  @InvalidateChatCache()
+  async setChatSeen(chatId: ObjectId, userId: ObjectId) {
+    const isInChat = await this.checkUserInChat(chatId, userId);
+    if (!isInChat) throw new BadRequestException('User not in chat');
+
+    return this.db.collection<Message>('messages').updateMany(
+      { chatId, seenBy: { $ne: userId } }, // Update all unseen messages in the chat
+      { $addToSet: { seenBy: userId } }, // Add userId to seenBy array
+    );
   }
 
   checkUserInChat(chatId: ObjectId, userId: ObjectId): Promise<boolean> {

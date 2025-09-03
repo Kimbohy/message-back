@@ -91,6 +91,7 @@ export class ChatGateway implements OnGatewayConnection, OnGatewayDisconnect {
       }
 
       client.join(chatId.toString());
+      await this.chatService.setChatSeen(chatId, userId);
       console.log(`User ${userId} joined chat room: ${chatId}`);
 
       client.emit('chatJoined', { chatId: chatId.toString() });
