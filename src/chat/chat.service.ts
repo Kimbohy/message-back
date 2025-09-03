@@ -12,6 +12,12 @@ import { CreateChatDto } from './dto/create-chat.dto';
 import { StartChatByEmailDto } from './dto/start-chat-by-email.dto';
 import { AuthService } from 'src/auth';
 import { ChatGateway } from './chat-gateway';
+import {
+  CacheWithRedis,
+  InvalidateCache,
+  InvalidateChatCache,
+} from 'src/common/decorators/cache.decorator';
+import { RedisCacheService } from 'src/common/services/redis-cache.service';
 
 @Injectable()
 // todo: implement DTO validation
@@ -21,6 +27,7 @@ export class ChatService {
     private readonly authService: AuthService,
     @Inject(forwardRef(() => ChatGateway))
     private readonly chatGateway: ChatGateway,
+    private readonly redisCache: RedisCacheService,
   ) {}
 
   createChat(createChatDto: CreateChatDto) {
@@ -36,7 +43,9 @@ export class ChatService {
     return this.db.collection<Chat>('chats').insertOne(chat);
   }
 
-  getChatsForUser(userId: ObjectId) {
+  @CacheWithRedis((userId: ObjectId) => `chats:${userId}`, 3600)
+  async getChatsForUser(userId: ObjectId) {
+    await new Promise((resolve) => setTimeout(resolve, 1000)); // Simulate delay
     return this.db
       .collection<Chat>('chats')
       .aggregate([
@@ -70,10 +79,12 @@ export class ChatService {
       .toArray();
   }
 
+  @CacheWithRedis((chatId: ObjectId) => `chat:${chatId}`, 3600)
   getChatById(chatId: ObjectId) {
     return this.db.collection<Chat>('chats').findOne({ _id: chatId });
   }
 
+  @InvalidateChatCache()
   async sendMessage(chatId: ObjectId, senderId: ObjectId, content: string) {
     const chatExists = await this.checkChatExists(chatId);
     if (!chatExists) {
@@ -248,5 +259,15 @@ export class ChatService {
     }
 
     throw new Error('Failed to create chat');
+  }
+
+  async getChatMembers(chatId: ObjectId): Promise<ObjectId[]> {
+    const chat = await this.db
+      .collection<Chat>('chats')
+      .findOne({ _id: chatId });
+    if (!chat) {
+      throw new NotFoundException('Chat not found');
+    }
+    return chat.participants;
   }
 }
