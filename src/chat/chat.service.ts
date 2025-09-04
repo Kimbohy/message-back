@@ -6,7 +6,7 @@ import {
   forwardRef,
 } from '@nestjs/common';
 import { Db, ObjectId } from 'mongodb';
-import { Chat, ChatType } from 'src/interfaces/chat.interface';
+import { Chat, ChatModel, ChatType } from 'src/interfaces/chat.interface';
 import { Message } from 'src/interfaces/message.interface';
 import { CreateChatDto } from './dto/create-chat.dto';
 import { StartChatByEmailDto } from './dto/start-chat-by-email.dto';
@@ -14,10 +14,8 @@ import { AuthService } from 'src/auth';
 import { ChatGateway } from './chat-gateway';
 import {
   CacheWithRedis,
-  InvalidateCache,
   InvalidateChatCache,
 } from 'src/common/decorators/cache.decorator';
-import { RedisCacheService } from 'src/common/services/redis-cache.service';
 
 @Injectable()
 // todo: implement DTO validation
@@ -27,12 +25,11 @@ export class ChatService {
     private readonly authService: AuthService,
     @Inject(forwardRef(() => ChatGateway))
     private readonly chatGateway: ChatGateway,
-    private readonly redisCache: RedisCacheService,
   ) {}
 
   createChat(createChatDto: CreateChatDto) {
     const { participants, type, name } = createChatDto;
-    const chat: Chat = {
+    const chat: ChatModel = {
       _id: new ObjectId(),
       type,
       participants,
@@ -40,14 +37,14 @@ export class ChatService {
       createdAt: new Date(),
       updatedAt: new Date(),
     };
-    return this.db.collection<Chat>('chats').insertOne(chat);
+    return this.db.collection<ChatModel>('chats').insertOne(chat);
   }
 
-  @CacheWithRedis((userId: ObjectId) => `chats:${userId}`, 3600)
+  // @CacheWithRedis((userId: ObjectId) => `chats:${userId}`, 300)
   async getChatsForUser(userId: ObjectId) {
-    await new Promise((resolve) => setTimeout(resolve, 1000)); // Simulate delay
-    return this.db
-      .collection<Chat>('chats')
+    // await new Promise((resolve) => setTimeout(resolve, 100)); // Simulate delay
+    const data = this.db
+      .collection<ChatModel>('chats')
       .aggregate([
         { $match: { participants: userId } },
         {
@@ -77,11 +74,41 @@ export class ChatService {
         },
       ])
       .toArray();
+    return data as Promise<Chat[]>;
   }
 
-  @CacheWithRedis((chatId: ObjectId) => `chat:${chatId}`, 3600)
-  getChatById(chatId: ObjectId) {
-    return this.db.collection<Chat>('chats').findOne({ _id: chatId });
+  @CacheWithRedis((chatId: ObjectId) => `chat:${chatId}`, 300)
+  async getChatById(chatId: ObjectId): Promise<Chat | null> {
+    const result = await this.db
+      .collection<ChatModel>('chats')
+      .aggregate([
+        { $match: { _id: chatId } },
+        {
+          $lookup: {
+            from: 'users',
+            localField: 'participants',
+            foreignField: '_id',
+            as: 'participants',
+          },
+        },
+        {
+          $lookup: {
+            from: 'messages',
+            localField: 'lastMessage',
+            foreignField: '_id',
+            as: 'lastMessage',
+          },
+        },
+        { $unwind: { path: '$lastMessage', preserveNullAndEmptyArrays: true } },
+        {
+          $project: {
+            'participants.password': 0,
+            'lastMessage.chatId': 0,
+          },
+        },
+      ])
+      .next();
+    return result as Chat | null;
   }
 
   @InvalidateChatCache()
@@ -103,7 +130,7 @@ export class ChatService {
     const result = await this.db.collection('messages').insertOne(message);
     if (result.acknowledged) {
       this.db
-        .collection<Chat>('chats')
+        .collection<ChatModel>('chats')
         .updateOne(
           { _id: chatId },
           { $set: { updatedAt: new Date(), lastMessage: message._id } },
@@ -118,13 +145,13 @@ export class ChatService {
 
   addUserToChat(chatId: ObjectId, userId: ObjectId) {
     return this.db
-      .collection<Chat>('chats')
+      .collection<ChatModel>('chats')
       .updateOne({ _id: chatId }, { $addToSet: { participants: userId } });
   }
 
   removeUserFromChat(chatId: ObjectId, userId: ObjectId) {
     return this.db
-      .collection<Chat>('chats')
+      .collection<ChatModel>('chats')
       .updateOne({ _id: chatId }, { $pull: { participants: userId } });
   }
 
@@ -141,7 +168,7 @@ export class ChatService {
 
   checkUserInChat(chatId: ObjectId, userId: ObjectId): Promise<boolean> {
     return this.db
-      .collection<Chat>('chats')
+      .collection<ChatModel>('chats')
       .findOne({ _id: chatId, participants: userId })
       .then((chat) => !!chat);
   }
@@ -173,7 +200,7 @@ export class ChatService {
     const recipientUserId = new ObjectId(recipientUser._id);
 
     // Find or create private chat
-    const chat = await this.findOrCreatePrivateChat(
+    let chat = await this.findOrCreatePrivateChat(
       currentUserId,
       recipientUserId,
     );
@@ -209,6 +236,7 @@ export class ChatService {
             senderEmail: req.user.email,
             senderId: currentUserId.toString(),
             createdAt: new Date(),
+            updatedAt: new Date(),
           },
           updatedAt: new Date(),
         };
@@ -216,6 +244,12 @@ export class ChatService {
         this.chatGateway.server
           .to(`user_${recipientUserId.toString()}`)
           .emit('chatUpdated', chatUpdate);
+      }
+
+      // Refetch chat to get updated lastMessage
+      const updatedChat = await this.getChatById(chat._id);
+      if (updatedChat) {
+        chat = updatedChat;
       }
     }
 
@@ -246,17 +280,47 @@ export class ChatService {
     user2Id: ObjectId,
   ): Promise<Chat> {
     // Check if a private chat already exists between these users
-    const existingChat = await this.db.collection<Chat>('chats').findOne({
-      type: ChatType.PRIVATE,
-      participants: { $all: [user1Id, user2Id], $size: 2 },
-    });
+    const existingChat = await this.db
+      .collection<ChatModel>('chats')
+      .aggregate([
+        {
+          $match: {
+            type: ChatType.PRIVATE,
+            participants: { $all: [user1Id, user2Id], $size: 2 },
+          },
+        },
+        {
+          $lookup: {
+            from: 'users',
+            localField: 'participants',
+            foreignField: '_id',
+            as: 'participants',
+          },
+        },
+        {
+          $lookup: {
+            from: 'messages',
+            localField: 'lastMessage',
+            foreignField: '_id',
+            as: 'lastMessage',
+          },
+        },
+        { $unwind: { path: '$lastMessage', preserveNullAndEmptyArrays: true } },
+        {
+          $project: {
+            'participants.password': 0,
+            'lastMessage.chatId': 0,
+          },
+        },
+      ])
+      .next();
 
     if (existingChat) {
-      return existingChat;
+      return existingChat as Chat;
     }
 
     // Create new private chat
-    const chat: Chat = {
+    const chat: ChatModel = {
       _id: new ObjectId(),
       type: ChatType.PRIVATE,
       participants: [user1Id, user2Id],
@@ -264,10 +328,42 @@ export class ChatService {
       updatedAt: new Date(),
     };
 
-    const result = await this.db.collection<Chat>('chats').insertOne(chat);
+    const result = await this.db.collection<ChatModel>('chats').insertOne(chat);
 
     if (result.acknowledged) {
-      return chat;
+      // Fetch the newly created chat with populated participants
+      const populatedChat = await this.db
+        .collection<ChatModel>('chats')
+        .aggregate([
+          { $match: { _id: chat._id } },
+          {
+            $lookup: {
+              from: 'users',
+              localField: 'participants',
+              foreignField: '_id',
+              as: 'participants',
+            },
+          },
+          {
+            $lookup: {
+              from: 'messages',
+              localField: 'lastMessage',
+              foreignField: '_id',
+              as: 'lastMessage',
+            },
+          },
+          {
+            $unwind: { path: '$lastMessage', preserveNullAndEmptyArrays: true },
+          },
+          {
+            $project: {
+              'participants.password': 0,
+              'lastMessage.chatId': 0,
+            },
+          },
+        ])
+        .next();
+      return populatedChat as Chat;
     }
 
     throw new Error('Failed to create chat');
@@ -275,7 +371,7 @@ export class ChatService {
 
   async getChatMembers(chatId: ObjectId): Promise<ObjectId[]> {
     const chat = await this.db
-      .collection<Chat>('chats')
+      .collection<ChatModel>('chats')
       .findOne({ _id: chatId });
     if (!chat) {
       throw new NotFoundException('Chat not found');

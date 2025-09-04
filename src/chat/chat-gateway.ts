@@ -155,6 +155,7 @@ export class ChatGateway implements OnGatewayConnection, OnGatewayDisconnect {
             senderEmail: client.userEmail,
             senderId: senderId.toString(),
             createdAt: new Date(),
+            updatedAt: new Date(),
           },
           updatedAt: new Date(),
         };
@@ -162,11 +163,14 @@ export class ChatGateway implements OnGatewayConnection, OnGatewayDisconnect {
         // Get chat participants
         const chat = await this.chatService.getChatById(chatId);
         if (chat) {
-          chat.participants.forEach((participantId) => {
+          chat.participants.forEach((participant) => {
             // Don't send to sender
-            if (!participantId.equals(senderId)) {
+            if (
+              participant._id &&
+              participant._id.toString() !== senderId.toString()
+            ) {
               this.server
-                .to(`user_${participantId.toString()}`)
+                .to(`user_${participant._id.toString()}`)
                 .emit('chatUpdated', chatUpdate);
             }
           });
@@ -255,6 +259,7 @@ export class ChatGateway implements OnGatewayConnection, OnGatewayDisconnect {
               senderEmail: client.userEmail,
               senderId: currentUserId.toString(),
               createdAt: new Date(),
+              updatedAt: new Date(),
             },
             updatedAt: new Date(),
           };
@@ -266,16 +271,7 @@ export class ChatGateway implements OnGatewayConnection, OnGatewayDisconnect {
       }
 
       // Notify both users about the new/found chat
-      client.emit('chatStarted', {
-        success: true,
-        chat: {
-          _id: chat._id.toString(),
-          type: chat.type,
-          participants: chat.participants.map((p) => p.toString()),
-          createdAt: chat.createdAt,
-          updatedAt: chat.updatedAt,
-        },
-      });
+      client.emit('chatCreated', chat);
 
       this.server
         .to(`user_${recipientUserId.toString()}`)
