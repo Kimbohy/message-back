@@ -6,9 +6,6 @@ import {
   Post,
   Request,
   UseGuards,
-  Inject,
-  BadRequestException,
-  NotFoundException,
 } from '@nestjs/common';
 import { ChatService } from './chat.service';
 import { JwtAuthGuard } from 'src/auth/guards/jwt-auth.guard';
@@ -54,9 +51,11 @@ export class ChatController {
             .emit('chatCreated', newChat);
         });
       }
+
+      return newChat;
     }
 
-    return result;
+    throw new Error('Failed to create chat');
   }
 
   @UseGuards(JwtAuthGuard)

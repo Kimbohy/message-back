@@ -16,16 +16,22 @@ import {
   CacheWithRedis,
   InvalidateChatCache,
 } from 'src/common/decorators/cache.decorator';
+import { RedisCacheService } from 'src/common/services/redis-cache.service';
 
 @Injectable()
 // todo: implement DTO validation
 export class ChatService {
+  private redisCache: RedisCacheService;
+
   constructor(
     @Inject('MONGO_DB') private readonly db: Db,
     private readonly authService: AuthService,
     @Inject(forwardRef(() => ChatGateway))
     private readonly chatGateway: ChatGateway,
-  ) {}
+    redisCacheService: RedisCacheService,
+  ) {
+    this.redisCache = redisCacheService;
+  }
 
   createChat(createChatDto: CreateChatDto) {
     const { participants, type, name } = createChatDto;
@@ -40,7 +46,7 @@ export class ChatService {
     return this.db.collection<ChatModel>('chats').insertOne(chat);
   }
 
-  // @CacheWithRedis((userId: ObjectId) => `chats:${userId}`, 300)
+  @CacheWithRedis((userId: ObjectId) => `chats:${userId}`, 300)
   async getChatsForUser(userId: ObjectId) {
     // await new Promise((resolve) => setTimeout(resolve, 100)); // Simulate delay
     const data = this.db
@@ -264,13 +270,7 @@ export class ChatService {
 
     return {
       success: true,
-      chat: {
-        _id: chat._id.toString(),
-        type: chat.type,
-        participants: chat.participants.map((p) => p.toString()),
-        createdAt: chat.createdAt,
-        updatedAt: chat.updatedAt,
-      },
+      chat: chat,
       message: 'Chat started successfully',
     };
   }
