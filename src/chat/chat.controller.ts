@@ -10,69 +10,60 @@ import {
 import { ChatService } from './chat.service';
 import { JwtAuthGuard } from 'src/auth/guards/jwt-auth.guard';
 import { CreateChatDto } from './dto/create-chat.dto';
-import { StartChatByEmailDto } from './dto/start-chat-by-email.dto';
 import { ObjectId } from 'mongodb';
-import { ChatGateway } from './chat-gateway';
 
+/**
+ * ChatController
+ * HTTP REST endpoints for chat operations
+ * WebSocket operations are handled by ChatGateway
+ */
 @Controller('chat')
 export class ChatController {
-  constructor(
-    private readonly chatService: ChatService,
-    private readonly chatGateway: ChatGateway,
-  ) {}
+  constructor(private readonly chatService: ChatService) {}
 
+  /**
+   * Get all chats for authenticated user
+   */
   @UseGuards(JwtAuthGuard)
   @Get()
   async getChats(@Request() req: any) {
-    const userId = req.user._id;
+    const userId = new ObjectId(req.user._id);
     return this.chatService.getChatsForUser(userId);
   }
 
+  /**
+   * Create a new chat (group chat)
+   */
   @UseGuards(JwtAuthGuard)
   @Post()
   async createChat(@Request() req: any, @Body() createChatDto: CreateChatDto) {
-    const userId = req.user._id;
-    const participants = new Set([...createChatDto.participants, userId]);
+    const userId = new ObjectId(req.user._id);
+    const participantIds = createChatDto.participants.map(
+      (p) => new ObjectId(p),
+    );
+    const participants = new Set([...participantIds, userId]);
 
-    const result = await this.chatService.createChat({
+    return this.chatService.createChatWithNotification({
       ...createChatDto,
       participants: Array.from(participants),
     });
-
-    if (result.acknowledged) {
-      // Get the created chat with all details
-      const newChat = await this.chatService.getChatById(result.insertedId);
-
-      if (newChat) {
-        // Notify all participants of the new chat
-        newChat.participants.forEach((participantId) => {
-          this.chatGateway.server
-            .to(`user_${participantId.toString()}`)
-            .emit('chatCreated', newChat);
-        });
-      }
-
-      return newChat;
-    }
-
-    throw new Error('Failed to create chat');
   }
 
+  /**
+   * Get all messages for a specific chat
+   */
   @UseGuards(JwtAuthGuard)
   @Get(':id/messages')
-  async getMessages(@Param('id') chatId: string) {
+  async getMessages(@Param('id') chatId: string, @Request() req: any) {
     const objectId = new ObjectId(chatId);
+    const userId = new ObjectId(req.user._id);
+
+    // Verify user is in the chat
+    const isInChat = await this.chatService.checkUserInChat(objectId, userId);
+    if (!isInChat) {
+      throw new Error('You are not a participant in this chat');
+    }
+
     return this.chatService.getMessagesForChat(objectId);
   }
-
-  @UseGuards(JwtAuthGuard)
-  @Post('start-by-email')
-  async startChatByEmail(
-    @Request() req: any,
-    @Body() startChatDto: StartChatByEmailDto,
-  ) {
-    return this.chatService.startByEmail(req, startChatDto);
-  }
-
-  // todo: add chats participants management
 }

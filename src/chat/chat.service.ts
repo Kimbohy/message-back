@@ -1,39 +1,38 @@
 import {
   BadRequestException,
-  Inject,
   Injectable,
   NotFoundException,
-  forwardRef,
+  Logger,
 } from '@nestjs/common';
-import { Db, ObjectId } from 'mongodb';
+import { ObjectId } from 'mongodb';
 import { Chat, ChatModel, ChatType } from 'src/interfaces/chat.interface';
 import { Message } from 'src/interfaces/message.interface';
 import { CreateChatDto } from './dto/create-chat.dto';
-import { StartChatByEmailDto } from './dto/start-chat-by-email.dto';
-import { AuthService } from 'src/auth';
-import { ChatGateway } from './chat-gateway';
 import {
   CacheWithRedis,
   InvalidateChatCache,
 } from 'src/common/decorators/cache.decorator';
-import { RedisCacheService } from 'src/common/services/redis-cache.service';
+import { ChatRepository, MessageRepository } from './repositories';
+import { CHAT_ERRORS } from './constants';
 
+/**
+ * ChatService
+ * Business logic layer for chat operations
+ * Uses repositories for data access and maintains cache
+ */
 @Injectable()
-// todo: implement DTO validation
 export class ChatService {
-  private redisCache: RedisCacheService;
+  private readonly logger = new Logger(ChatService.name);
 
   constructor(
-    @Inject('MONGO_DB') private readonly db: Db,
-    private readonly authService: AuthService,
-    @Inject(forwardRef(() => ChatGateway))
-    private readonly chatGateway: ChatGateway,
-    redisCacheService: RedisCacheService,
-  ) {
-    this.redisCache = redisCacheService;
-  }
+    private readonly chatRepository: ChatRepository,
+    private readonly messageRepository: MessageRepository,
+  ) {}
 
-  createChat(createChatDto: CreateChatDto) {
+  /**
+   * Create a new chat
+   */
+  async createChat(createChatDto: CreateChatDto) {
     const { participants, type, name } = createChatDto;
     const chat: ChatModel = {
       _id: new ObjectId(),
@@ -43,87 +42,49 @@ export class ChatService {
       createdAt: new Date(),
       updatedAt: new Date(),
     };
-    return this.db.collection<ChatModel>('chats').insertOne(chat);
+    return this.chatRepository.create(chat);
   }
 
+  /**
+   * Get all chats for a user (cached)
+   */
   @CacheWithRedis((userId: ObjectId) => `chats:${userId}`, 300)
-  async getChatsForUser(userId: ObjectId) {
-    // await new Promise((resolve) => setTimeout(resolve, 100)); // Simulate delay
-    const data = this.db
-      .collection<ChatModel>('chats')
-      .aggregate([
-        { $match: { participants: userId } },
-        {
-          $lookup: {
-            from: 'users',
-            localField: 'participants',
-            foreignField: '_id',
-            as: 'participants',
-          },
-        },
-        // Populate the lastMessage object (if present), and populate its sender
-        {
-          $lookup: {
-            from: 'messages',
-            localField: 'lastMessage',
-            foreignField: '_id',
-            as: 'lastMessage',
-          },
-        },
-        { $unwind: { path: '$lastMessage', preserveNullAndEmptyArrays: true } },
-        // Remove password fields from joined user documents (participants and lastMessage.sender)
-        {
-          $project: {
-            'participants.password': 0,
-            'lastMessage.chatId': 0,
-          },
-        },
-      ])
-      .toArray();
-    return data as Promise<Chat[]>;
+  async getChatsForUser(userId: ObjectId): Promise<Chat[]> {
+    try {
+      return await this.chatRepository.findByUserId(userId);
+    } catch (error) {
+      this.logger.error(
+        `Error getting chats for user ${userId}: ${error.message}`,
+      );
+      throw new BadRequestException(CHAT_ERRORS.FAILED_TO_GET_CHAT_LIST);
+    }
   }
 
+  /**
+   * Get chat by ID with populated data (cached)
+   */
   @CacheWithRedis((chatId: ObjectId) => `chat:${chatId}`, 300)
   async getChatById(chatId: ObjectId): Promise<Chat | null> {
-    const result = await this.db
-      .collection<ChatModel>('chats')
-      .aggregate([
-        { $match: { _id: chatId } },
-        {
-          $lookup: {
-            from: 'users',
-            localField: 'participants',
-            foreignField: '_id',
-            as: 'participants',
-          },
-        },
-        {
-          $lookup: {
-            from: 'messages',
-            localField: 'lastMessage',
-            foreignField: '_id',
-            as: 'lastMessage',
-          },
-        },
-        { $unwind: { path: '$lastMessage', preserveNullAndEmptyArrays: true } },
-        {
-          $project: {
-            'participants.password': 0,
-            'lastMessage.chatId': 0,
-          },
-        },
-      ])
-      .next();
-    return result as Chat | null;
+    try {
+      return await this.chatRepository.findById(chatId);
+    } catch (error) {
+      this.logger.error(`Error getting chat ${chatId}: ${error.message}`);
+      return null;
+    }
   }
 
+  /**
+   * Send a message in a chat
+   */
   @InvalidateChatCache()
   async sendMessage(chatId: ObjectId, senderId: ObjectId, content: string) {
-    const chatExists = await this.checkChatExists(chatId);
+    // Verify chat exists
+    const chatExists = await this.chatRepository.exists(chatId);
     if (!chatExists) {
-      throw new Error('Chat does not exist');
+      throw new NotFoundException(CHAT_ERRORS.CHAT_NOT_EXIST);
     }
 
+    // Create message
     const message: Message = {
       _id: new ObjectId(),
       chatId,
@@ -133,249 +94,161 @@ export class ChatService {
       updatedAt: new Date(),
       seenBy: [senderId],
     };
-    const result = await this.db.collection('messages').insertOne(message);
-    if (result.acknowledged) {
-      this.db
-        .collection<ChatModel>('chats')
-        .updateOne(
-          { _id: chatId },
-          { $set: { updatedAt: new Date(), lastMessage: message._id } },
-        );
+
+    try {
+      const result = await this.messageRepository.create(message);
+
+      if (result.acknowledged) {
+        // Update chat's last message
+        await this.chatRepository.updateLastMessage(chatId, message._id);
+      }
+
+      return result;
+    } catch (error) {
+      this.logger.error(`Error sending message: ${error.message}`);
+      throw new BadRequestException(CHAT_ERRORS.FAILED_TO_SEND_MESSAGE);
     }
-    return result;
   }
 
-  getMessagesForChat(chatId: ObjectId) {
-    return this.db.collection<Message>('messages').find({ chatId }).toArray();
+  /**
+   * Get all messages for a chat
+   */
+  async getMessagesForChat(chatId: ObjectId): Promise<Message[]> {
+    try {
+      return await this.messageRepository.findByChatId(chatId);
+    } catch (error) {
+      this.logger.error(
+        `Error getting messages for chat ${chatId}: ${error.message}`,
+      );
+      throw new BadRequestException('Failed to get messages');
+    }
   }
 
-  addUserToChat(chatId: ObjectId, userId: ObjectId) {
-    return this.db
-      .collection<ChatModel>('chats')
-      .updateOne({ _id: chatId }, { $addToSet: { participants: userId } });
-  }
-
-  removeUserFromChat(chatId: ObjectId, userId: ObjectId) {
-    return this.db
-      .collection<ChatModel>('chats')
-      .updateOne({ _id: chatId }, { $pull: { participants: userId } });
-  }
-
+  /**
+   * Mark chat as seen by user
+   */
   @InvalidateChatCache()
   async setChatSeen(chatId: ObjectId, userId: ObjectId) {
-    const isInChat = await this.checkUserInChat(chatId, userId);
-    if (!isInChat) throw new BadRequestException('User not in chat');
-
-    return this.db.collection<Message>('messages').updateMany(
-      { chatId, seenBy: { $ne: userId } }, // Update all unseen messages in the chat
-      { $addToSet: { seenBy: userId } }, // Add userId to seenBy array
-    );
-  }
-
-  checkUserInChat(chatId: ObjectId, userId: ObjectId): Promise<boolean> {
-    return this.db
-      .collection<ChatModel>('chats')
-      .findOne({ _id: chatId, participants: userId })
-      .then((chat) => !!chat);
-  }
-
-  checkChatExists(chatId: ObjectId): Promise<boolean> {
-    return this.db
-      .collection<Chat>('chats')
-      .findOne({ _id: chatId })
-      .then((chat) => !!chat);
-  }
-
-  async startByEmail(req: any, startChatDto: StartChatByEmailDto) {
-    const currentUserId = new ObjectId(req.user._id);
-    const { recipientEmail, initialMessage } = startChatDto;
-
-    // Check if trying to start chat with themselves
-    if (recipientEmail.toLowerCase() === req.user.email.toLowerCase()) {
-      throw new BadRequestException('Cannot start a chat with yourself');
+    const isInChat = await this.chatRepository.isUserInChat(chatId, userId);
+    if (!isInChat) {
+      throw new BadRequestException(CHAT_ERRORS.USER_NOT_IN_CHAT);
     }
 
-    // Find the recipient user by email
-    const recipientUser =
-      await this.authService.findUserByEmail(recipientEmail);
-
-    if (!recipientUser) {
-      throw new NotFoundException('User with this email does not exist');
+    try {
+      return await this.messageRepository.markAsSeen(chatId, userId);
+    } catch (error) {
+      this.logger.error(`Error marking chat as seen: ${error.message}`);
+      throw new BadRequestException('Failed to mark chat as seen');
     }
-
-    const recipientUserId = new ObjectId(recipientUser._id);
-
-    // Find or create private chat
-    let chat = await this.findOrCreatePrivateChat(
-      currentUserId,
-      recipientUserId,
-    );
-
-    // If there's an initial message, send it
-    if (initialMessage && initialMessage.trim()) {
-      const messageResult = await this.sendMessage(
-        chat._id,
-        currentUserId,
-        initialMessage.trim(),
-      );
-
-      if (messageResult.acknowledged) {
-        const messageToSend = {
-          _id: messageResult.insertedId.toString(),
-          chatId: chat._id.toString(),
-          senderId: currentUserId.toString(),
-          senderEmail: req.user.email,
-          content: initialMessage.trim(),
-          createdAt: new Date(),
-        };
-
-        // Send message to both users if they're connected via WebSocket
-        this.chatGateway.server
-          .to(chat._id.toString())
-          .emit('message', messageToSend);
-
-        // Send chat update to recipient
-        const chatUpdate = {
-          chatId: chat._id.toString(),
-          lastMessage: {
-            content: initialMessage.trim(),
-            senderEmail: req.user.email,
-            senderId: currentUserId.toString(),
-            createdAt: new Date(),
-            updatedAt: new Date(),
-          },
-          updatedAt: new Date(),
-        };
-
-        this.chatGateway.server
-          .to(`user_${recipientUserId.toString()}`)
-          .emit('chatUpdated', chatUpdate);
-      }
-
-      // Refetch chat to get updated lastMessage
-      const updatedChat = await this.getChatById(chat._id);
-      if (updatedChat) {
-        chat = updatedChat;
-      }
-    }
-
-    // Notify both users about the new/found chat
-    this.chatGateway.server
-      .to(`user_${currentUserId.toString()}`)
-      .emit('chatCreated', chat);
-
-    this.chatGateway.server
-      .to(`user_${recipientUserId.toString()}`)
-      .emit('chatCreated', chat);
-
-    return {
-      success: true,
-      chat: chat,
-      message: 'Chat started successfully',
-    };
   }
 
+  /**
+   * Check if user is in a chat
+   */
+  async checkUserInChat(chatId: ObjectId, userId: ObjectId): Promise<boolean> {
+    return this.chatRepository.isUserInChat(chatId, userId);
+  }
+
+  /**
+   * Check if chat exists
+   */
+  async checkChatExists(chatId: ObjectId): Promise<boolean> {
+    return this.chatRepository.exists(chatId);
+  }
+
+  /**
+   * Add user to chat
+   */
+  async addUserToChat(chatId: ObjectId, userId: ObjectId) {
+    return this.chatRepository.addParticipant(chatId, userId);
+  }
+
+  /**
+   * Remove user from chat
+   */
+  async removeUserFromChat(chatId: ObjectId, userId: ObjectId) {
+    return this.chatRepository.removeParticipant(chatId, userId);
+  }
+
+  /**
+   * Get chat members
+   */
+  async getChatMembers(chatId: ObjectId): Promise<ObjectId[]> {
+    const participants = await this.chatRepository.getParticipants(chatId);
+    if (!participants || participants.length === 0) {
+      throw new NotFoundException(CHAT_ERRORS.CHAT_NOT_FOUND);
+    }
+    return participants;
+  }
+
+  /**
+   * Find or create a private chat between two users
+   */
   async findOrCreatePrivateChat(
     user1Id: ObjectId,
     user2Id: ObjectId,
   ): Promise<Chat> {
-    // Check if a private chat already exists between these users
-    const existingChat = await this.db
-      .collection<ChatModel>('chats')
-      .aggregate([
-        {
-          $match: {
-            type: ChatType.PRIVATE,
-            participants: { $all: [user1Id, user2Id], $size: 2 },
-          },
-        },
-        {
-          $lookup: {
-            from: 'users',
-            localField: 'participants',
-            foreignField: '_id',
-            as: 'participants',
-          },
-        },
-        {
-          $lookup: {
-            from: 'messages',
-            localField: 'lastMessage',
-            foreignField: '_id',
-            as: 'lastMessage',
-          },
-        },
-        { $unwind: { path: '$lastMessage', preserveNullAndEmptyArrays: true } },
-        {
-          $project: {
-            'participants.password': 0,
-            'lastMessage.chatId': 0,
-          },
-        },
-      ])
-      .next();
+    try {
+      // Check if chat already exists
+      const existingChat = await this.chatRepository.findPrivateChat(
+        user1Id,
+        user2Id,
+      );
 
-    if (existingChat) {
-      return existingChat as Chat;
+      if (existingChat) {
+        return existingChat;
+      }
+
+      // Create new private chat
+      const chat: ChatModel = {
+        _id: new ObjectId(),
+        type: ChatType.PRIVATE,
+        participants: [user1Id, user2Id],
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      };
+
+      const result = await this.chatRepository.create(chat);
+
+      if (result.acknowledged) {
+        // Fetch populated chat
+        const populatedChat = await this.chatRepository.findById(chat._id);
+        if (populatedChat) {
+          return populatedChat;
+        }
+      }
+
+      throw new Error('Failed to create chat');
+    } catch (error) {
+      this.logger.error(
+        `Error finding/creating private chat: ${error.message}`,
+      );
+      throw new BadRequestException(CHAT_ERRORS.FAILED_TO_START_CHAT);
     }
-
-    // Create new private chat
-    const chat: ChatModel = {
-      _id: new ObjectId(),
-      type: ChatType.PRIVATE,
-      participants: [user1Id, user2Id],
-      createdAt: new Date(),
-      updatedAt: new Date(),
-    };
-
-    const result = await this.db.collection<ChatModel>('chats').insertOne(chat);
-
-    if (result.acknowledged) {
-      // Fetch the newly created chat with populated participants
-      const populatedChat = await this.db
-        .collection<ChatModel>('chats')
-        .aggregate([
-          { $match: { _id: chat._id } },
-          {
-            $lookup: {
-              from: 'users',
-              localField: 'participants',
-              foreignField: '_id',
-              as: 'participants',
-            },
-          },
-          {
-            $lookup: {
-              from: 'messages',
-              localField: 'lastMessage',
-              foreignField: '_id',
-              as: 'lastMessage',
-            },
-          },
-          {
-            $unwind: { path: '$lastMessage', preserveNullAndEmptyArrays: true },
-          },
-          {
-            $project: {
-              'participants.password': 0,
-              'lastMessage.chatId': 0,
-            },
-          },
-        ])
-        .next();
-      return populatedChat as Chat;
-    }
-
-    throw new Error('Failed to create chat');
   }
 
-  async getChatMembers(chatId: ObjectId): Promise<ObjectId[]> {
-    const chat = await this.db
-      .collection<ChatModel>('chats')
-      .findOne({ _id: chatId });
-    if (!chat) {
-      throw new NotFoundException('Chat not found');
+  /**
+   * Create chat with notification (used by HTTP endpoint)
+   */
+  async createChatWithNotification(
+    createChatDto: CreateChatDto,
+  ): Promise<Chat> {
+    try {
+      const result = await this.createChat(createChatDto);
+
+      if (!result.acknowledged) {
+        throw new Error('Failed to create chat');
+      }
+
+      const newChat = await this.getChatById(result.insertedId);
+      if (!newChat) {
+        throw new Error('Failed to fetch created chat');
+      }
+
+      return newChat;
+    } catch (error) {
+      this.logger.error(`Error creating chat: ${error.message}`);
+      throw new BadRequestException('Failed to create chat');
     }
-    return chat.participants;
   }
 }
