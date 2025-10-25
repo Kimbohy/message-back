@@ -12,6 +12,7 @@ import {
   CacheWithRedis,
   InvalidateChatCache,
 } from 'src/common/decorators/cache.decorator';
+import { RedisCacheService } from 'src/common/services/redis-cache.service';
 import { ChatRepository, MessageRepository } from './repositories';
 import { CHAT_ERRORS } from './constants';
 
@@ -27,6 +28,7 @@ export class ChatService {
   constructor(
     private readonly chatRepository: ChatRepository,
     private readonly messageRepository: MessageRepository,
+    private readonly redisCache: RedisCacheService,
   ) {}
 
   /**
